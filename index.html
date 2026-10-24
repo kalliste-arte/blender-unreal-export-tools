@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Model Viewer</title>
+<style>
+  :root{--bg:#0b0a0a;--ink:#f4f2f2;--mu:#9a8e90;--ln:#2a2123;--ac:#ec2a38}
+  *{box-sizing:border-box;margin:0}
+  html,body{height:100%;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+  canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+  header{position:fixed;top:18px;left:20px;display:flex;flex-direction:column}
+  header b{font-size:20px;letter-spacing:-.02em}header span{color:var(--mu);font-size:13px}
+  #info{position:fixed;top:18px;right:20px;max-width:260px;text-align:right;color:var(--mu);font-size:13px}
+  #info b{display:block;color:var(--ink);font-size:15px;overflow-wrap:anywhere}
+  #bar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:94vw;padding:8px;background:rgba(20,17,18,.8);backdrop-filter:blur(12px);border:1px solid var(--ln);border-radius:16px}
+  button{background:none;border:1px solid transparent;color:var(--ink);font:inherit;font-size:14px;padding:8px 14px;border-radius:10px;cursor:pointer}
+  button:hover{border-color:var(--ln)}button.on{background:var(--ac);color:#fff}
+  button:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+  #drop{position:fixed;inset:12px;border:2px dashed var(--ac);border-radius:20px;background:rgba(236,42,56,.08);display:none;align-items:center;justify-content:center;font-size:22px;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<header><b>Model Viewer</b><span>Drop a .glb or .gltf file anywhere</span></header>
+<aside id="info"></aside>
+<div id="bar">
+  <button id="open">Open file</button>
+  <button id="rot" class="on">Rotate</button>
+  <button id="wire">Wireframe</button>
+  <button id="grid" class="on">Grid</button>
+  <button id="light">Light: Studio</button>
+  <button id="shot">Screenshot</button>
+  <input id="file" type="file" accept=".glb,.gltf" hidden>
+</div>
+<div id="drop">Drop to load</div>
+
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js";
+import {RoomEnvironment} from "three/addons/environments/RoomEnvironment.js";
+
+const $ = s => document.querySelector(s), cv = $("#c");
+const R = new THREE.WebGLRenderer({canvas: cv, antialias: true, preserveDrawingBuffer: true});
+R.setPixelRatio(Math.min(devicePixelRatio, 2));
+R.toneMapping = THREE.ACESFilmicToneMapping;
+const S = new THREE.Scene(), C = new THREE.PerspectiveCamera(45, 1, 0.01, 1000);
+const HOME = new THREE.Vector3(2.5, 1.6, 3.2);
+C.position.copy(HOME);
+
+const ctl = new OrbitControls(C, cv);
+ctl.enableDamping = true; ctl.autoRotate = true; ctl.autoRotateSpeed = 1.2;
+
+// lighting presets
+const env = new THREE.PMREMGenerator(R).fromScene(new RoomEnvironment(), 0.04).texture;
+const hemi = new THREE.HemisphereLight(0xffffff, 0x222222, 0);
+const key = new THREE.DirectionalLight(0xffffff, 0); key.position.set(3, 5, 4);
+const grid = new THREE.GridHelper(10, 20, 0x555555, 0x2a2a2a);
+S.add(hemi, key, grid);
+const PRESETS = {
+  Studio: {bg: "#0b0a0a", env: true,  sky: 0xffffff, ground: 0x222222, hi: 0,   k: 0xffffff, ki: 0.8},
+  Sunset: {bg: "#170c0c", env: false, sky: 0xff9a6b, ground: 0x2a1020, hi: 1.1, k: 0xffb27a, ki: 2.4},
+  Cold:   {bg: "#090c12", env: false, sky: 0x7aa7ff, ground: 0x10131c, hi: 1.0, k: 0x9fc5ff, ki: 2.2}
+};
+const names = Object.keys(PRESETS); let li = 0;
+function preset(n) {
+  const p = PRESETS[n];
+  S.background = new THREE.Color(p.bg); S.environment = p.env ? env : null;
+  hemi.color.set(p.sky); hemi.groundColor.set(p.ground); hemi.intensity = p.hi;
+  key.color.set(p.k); key.intensity = p.ki;
+}
+preset("Studio");
+
+// model handling
+let model, wire = false;
+function setWire() {
+  model.traverse(o => { if (o.isMesh) [].concat(o.material).forEach(m => m.wireframe = wire); });
+}
+function setModel(obj, name) {
+  if (model) {
+    S.remove(model);
+    model.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) [].concat(o.material).forEach(m => m.dispose());
+    });
+  }
+  model = obj;
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3()), mid = box.getCenter(new THREE.Vector3());
+  const k = 2 / (Math.max(size.x, size.y, size.z) || 1);
+  model.scale.multiplyScalar(k);
+  model.position.sub(mid.multiplyScalar(k));
+  S.add(model);
+  grid.position.y = new THREE.Box3().setFromObject(model).min.y;
+  setWire();
+  C.position.copy(HOME); ctl.target.set(0, 0, 0);
+
+  let tris = 0, verts = 0, meshes = 0; const mats = new Set();
+  model.traverse(o => {
+    if (!o.isMesh) return;
+    const g = o.geometry; meshes++;
+    verts += g.attributes.position.count;
+    tris += (g.index ? g.index.count : g.attributes.position.count) / 3;
+    [].concat(o.material).forEach(m => mats.add(m));
+  });
+  const info = $("#info"); info.textContent = "";
+  const title = document.createElement("b"); title.textContent = name; info.append(title);
+  info.append(
+    `${Math.round(tris).toLocaleString()} triangles`, document.createElement("br"),
+    `${verts.toLocaleString()} vertices`, document.createElement("br"),
+    `${meshes} meshes, ${mats.size} materials`, document.createElement("br"),
+    `${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)} (model units)`);
+}
+
+// default model so the page is never empty
+const knot = new THREE.Mesh(
+  new THREE.TorusKnotGeometry(0.7, 0.24, 220, 32),
+  new THREE.MeshStandardMaterial({color: 0xec2a38, metalness: 0.85, roughness: 0.25}));
+setModel(knot, "Demo torus knot");
+
+// loading files
+const loader = new GLTFLoader();
+function load(file) {
+  if (!/\.(glb|gltf)$/i.test(file.name)) { alert("Please use a .glb or .gltf file."); return; }
+  const url = URL.createObjectURL(file);
+  loader.load(url, g => { setModel(g.scene, file.name); URL.revokeObjectURL(url); },
+    undefined, () => alert("Couldn't load that file. Use a .glb or a self-contained .gltf."));
+}
+$("#open").onclick = () => $("#file").click();
+$("#file").onchange = e => e.target.files[0] && load(e.target.files[0]);
+addEventListener("dragover", e => { e.preventDefault(); $("#drop").style.display = "flex"; });
+addEventListener("dragleave", e => { if (!e.relatedTarget) $("#drop").style.display = "none"; });
+addEventListener("drop", e => {
+  e.preventDefault(); $("#drop").style.display = "none";
+  if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]);
+});
+
+// controls
+const toggle = (id, on) => $(id).classList.toggle("on", on);
+const actions = {
+  rot:   () => { ctl.autoRotate = !ctl.autoRotate; toggle("#rot", ctl.autoRotate); },
+  wire:  () => { wire = !wire; setWire(); toggle("#wire", wire); },
+  grid:  () => { grid.visible = !grid.visible; toggle("#grid", grid.visible); },
+  light: () => { li = (li + 1) % names.length; preset(names[li]); $("#light").textContent = "Light: " + names[li]; },
+  shot:  () => {
+    R.render(S, C);
+    cv.toBlob(b => { const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = "model.png"; a.click(); });
+  }
+};
+for (const k in actions) $("#" + k).onclick = actions[k];
+addEventListener("keydown", e => {
+  const m = {r: "rot", w: "wire", g: "grid", l: "light", s: "shot"}[e.key.toLowerCase()];
+  if (m && !e.ctrlKey && !e.metaKey) actions[m]();
+});
+
+// render loop
+function resize() { R.setSize(innerWidth, innerHeight, false); C.aspect = innerWidth / innerHeight; C.updateProjectionMatrix(); }
+addEventListener("resize", resize); resize();
+(function loop() { requestAnimationFrame(loop); ctl.update(); R.render(S, C); })();
+</script>
+</body>
+</html>
